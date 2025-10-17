@@ -5,14 +5,15 @@ import asyncio
 import json
 import os
 import requests  # For API calls
-
+from PIL import Image
+import io
 # Initialize Pygame
 pygame.init()
 
 # Constants
 SCREEN_WIDTH = 400
 SCREEN_HEIGHT = 600
-GRAVITY = 0.4
+GRAVITY = 0.5
 JUMP_STRENGTH = -8
 PIPE_WIDTH = 60
 PIPE_GAP = 200
@@ -20,10 +21,11 @@ PIPE_SPEED = 3
 FPS = 60
 
 # Colors (Gensyn AI theme)
-BLACK = (0, 0, 0)
+BLACK = (35, 8, 0)
 WHITE = (255, 255, 255)
 YELLOW = (255, 255, 0)
-BLUE = (0, 150, 255)
+Pink = (250, 215, 209)
+#Brown(35, 8, 0)
 
 # Set up display (Pygbag handles this for web)
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -35,12 +37,44 @@ small_font = pygame.font.Font(None, 24)
 # API endpoint (update to your Vercel URL after deploy)
 API_BASE = os.environ.get('API_BASE', 'http://localhost:8000')  # Fallback for local testing
 
+# Load and process animated GIF
+def load_gif_frames(gif_path):
+    try:
+        gif = Image.open(gif_path)
+        frames = []
+        durations = []
+        for frame in range(gif.n_frames):
+            gif.seek(frame)
+            # Convert PIL image to Pygame surface
+            frame_image = gif.convert('RGBA')
+            frame_data = frame_image.tobytes()
+            pygame_frame = pygame.image.fromstring(frame_data, frame_image.size, 'RGBA')
+            # Scale the frame to desired size (e.g., 100x100 pixels)
+            pygame_frame = pygame.transform.scale(pygame_frame, (100, 100))
+            frames.append(pygame_frame)
+            # Get frame duration (in milliseconds)
+            duration = gif.info.get('duration', 100)  # Default to 100ms if not specified
+            durations.append(duration / 1000.0)  # Convert to seconds
+        return frames, durations
+    except Exception as e:
+        print(f"Error loading GIF: {e}")
+        # Fallback: create a single-frame placeholder
+        placeholder = pygame.Surface((100, 100), pygame.SRCALPHA)
+        placeholder.fill((255, 0, 0))  # Red square as fallback
+        return [placeholder], [0.1]
+
+# Load GIF frames
+gif_frames, frame_durations = load_gif_frames("logo.gif") 
+
+# Load and scale bee image
+bee_image = pygame.image.load("bee.png")  # Replace with your bee image file name
+bee_image = pygame.transform.scale(bee_image, (40, 40))  # Scale to 40x40 pixels (adjust as needed)
 class Bee:
     def __init__(self):
         self.x = 50
         self.y = SCREEN_HEIGHT // 2
         self.velocity = 0
-        self.radius = 20
+        self.radius = 20  # Used for collision, adjust if image size differs
 
     def jump(self):
         self.velocity = JUMP_STRENGTH
@@ -50,12 +84,13 @@ class Bee:
         self.y += self.velocity
 
     def draw(self, screen):
-        pygame.draw.circle(screen, YELLOW, (int(self.x), int(self.y)), self.radius)
-        pygame.draw.line(screen, WHITE, (self.x - 15, self.y - 5), (self.x - 25, self.y - 15), 3)
-        pygame.draw.line(screen, WHITE, (self.x - 15, self.y + 5), (self.x - 25, self.y + 15), 3)
+        # Draw the bee image
+        image_rect = bee_image.get_rect(center=(int(self.x), int(self.y)))
+        screen.blit(bee_image, image_rect)
 
     def get_rect(self):
-        return pygame.Rect(self.x - self.radius, self.y - self.radius, self.radius * 2, self.radius * 2)
+        # Adjust collision rect based on image size (40x40 pixels)
+        return pygame.Rect(self.x - 20, self.y - 20, 40, 40)
 
 class Pipe:
     def __init__(self, x):
@@ -72,9 +107,9 @@ class Pipe:
 
     def draw(self, screen):
         pygame.draw.rect(screen, WHITE, self.top_rect)
-        pygame.draw.rect(screen, BLUE, (self.x, 0, PIPE_WIDTH, 20))
+        pygame.draw.rect(screen, Pink, (self.x, 0, PIPE_WIDTH, 20))
         pygame.draw.rect(screen, WHITE, self.bottom_rect)
-        pygame.draw.rect(screen, BLUE, (self.x, self.bottom_rect.y - 20, PIPE_WIDTH, 20))
+        pygame.draw.rect(screen, Pink, (self.x, self.bottom_rect.y - 20, PIPE_WIDTH, 20))
 
 def draw_text(screen, text, font, color, x, y):
     text_surface = font.render(text, True, color)
@@ -127,7 +162,7 @@ def get_player_name(screen, font):
                     name += event.unicode if event.unicode.isalnum() else ""
         screen.fill(BLACK)
         draw_text(screen, "Enter Your Name:", font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 50)
-        draw_text(screen, name + "_", font, BLUE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)  # Cursor
+        draw_text(screen, name + "_", font, Pink, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)  # Cursor
         draw_text(screen, "Press ENTER to submit", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 50)
         pygame.display.flip()
         clock.tick(FPS)
@@ -141,23 +176,32 @@ async def main():
     game_over = False
     highscore_name, highscore = load_highscore()
     player_name = None
+    start_screen = True  # New state for start screen
+    current_frame = 0  # Current GIF frame index
+    frame_timer = 0  # Timer to track frame duration
 
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:
-                    if not game_over:
-                        bee.jump()
-                    else:
-                        bee = Bee()
-                        pipes = [Pipe(SCREEN_WIDTH + 100)]
-                        score = 0
-                        game_over = False
-                        player_name = None
+            if start_screen:
+                # Start screen: wait for SPACE or mouse click/touch
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                    start_screen = False
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    start_screen = False
+            elif event.type == pygame.KEYDOWN or event.type == pygame.MOUSEBUTTONDOWN:
+                # Flap with SPACE or touch anywhere on screen
+                if not game_over:
+                    bee.jump()
+                else:
+                    bee = Bee()
+                    pipes = [Pipe(SCREEN_WIDTH + 100)]
+                    score = 0
+                    game_over = False
+                    player_name = None
 
-        if not game_over:
+        if not start_screen and not game_over:
             bee.update()
 
             if pipes[-1].x < SCREEN_WIDTH - 200:
@@ -186,22 +230,36 @@ async def main():
                 save_highscore(highscore_name, highscore)
 
         # Draw
-        screen.fill(BLACK)
-        bee.draw(screen)
-        for pipe in pipes:
-            pipe.draw(screen)
-
-        draw_text(screen, f"Models Trained: {score}", font, WHITE, SCREEN_WIDTH // 2, 50)
-        draw_text(screen, f"High Score: {highscore} by {highscore_name}", small_font, WHITE, SCREEN_WIDTH // 2, 80)
-
-        if game_over:
-            draw_text(screen, "Game Over!", font, BLUE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 50)
-            draw_text(screen, f"Final Score: {score}", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
-            draw_text(screen, "Powered by Gensyn AI", small_font, BLUE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 30)
+        screen.fill(BLACK)  # Black background for all screens
+        if start_screen:
+            # Animate GIF
+            frame_timer += 1 / FPS  # Increment timer based on frame time
+            if frame_timer >= frame_durations[current_frame]:
+                current_frame = (current_frame + 1) % len(gif_frames)  # Cycle to next frame
+                frame_timer = 0  # Reset timer
+            # Draw GIF frame at top center (adjust position as needed)
+            frame_rect = gif_frames[current_frame].get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 100))
+            screen.blit(gif_frames[current_frame], frame_rect)
+            # Draw text below GIF
+            draw_text(screen, "Flappy Bee: Gensyn AI Edition", font, Pink, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 50)
+            draw_text(screen, "Tap the screen or press SPACE to start!", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+            draw_text(screen, "Powered by boogyman", small_font, Pink, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 30)
             draw_text(screen, "@gensynai - Train AI on the blockchain!", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 60)
-            draw_text(screen, "Press SPACE to restart", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50)
         else:
-            draw_text(screen, "Tap SPACE to flap!", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT - 30)
+            bee.draw(screen)
+            for pipe in pipes:
+                pipe.draw(screen)
+            draw_text(screen, f"Models Trained: {score}", font, WHITE, SCREEN_WIDTH // 2, 50)
+            draw_text(screen, f"High Score: {highscore} by {highscore_name}", small_font, WHITE, SCREEN_WIDTH // 2, 80)
+
+            if game_over:
+                draw_text(screen, "Game Over!", font, YELLOW, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 50)
+                draw_text(screen, f"Final Score: {score}", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+                draw_text(screen, "Powered by boogyman", small_font, Pink, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 30)
+                draw_text(screen, "@gensynai", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 60)
+                draw_text(screen, "Tap screen or press SPACE to restart", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50)
+            else:
+                draw_text(screen, "Tap screen or press SPACE to flap!", small_font, WHITE, SCREEN_WIDTH // 2, SCREEN_HEIGHT - 30)
 
         pygame.display.flip()
         await asyncio.sleep(0)  # Yield for browser
